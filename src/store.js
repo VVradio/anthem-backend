@@ -123,6 +123,28 @@ const supabaseDb = {
     const { error } = await sb.from("brain_items").delete().eq("user_id", userId).eq("id", id);
     return !error;
   },
+  async getChat(userId, agentId) {
+    const { data } = await sb.from("chats").select("messages")
+      .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
+    return data?.messages || [];
+  },
+  async saveChat(userId, agentId, messages) {
+    const trimmed = (messages || []).slice(-100);
+    await sb.from("chats").upsert(
+      { user_id: userId, agent_id: agentId, messages: trimmed, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,agent_id" }
+    );
+    return true;
+  },
+  async clearChat(userId, agentId) {
+    await sb.from("chats").delete().eq("user_id", userId).eq("agent_id", agentId);
+    return true;
+  },
+  async listChats(userId) {
+    const { data } = await sb.from("chats").select("agent_id, messages, updated_at")
+      .eq("user_id", userId).order("updated_at", { ascending: false });
+    return (data || []).map(r => ({ agentId: r.agent_id, count: (r.messages || []).length, messages: r.messages || [], updatedAt: r.updated_at }));
+  },
 };
 
 // Map snake_case DB rows to the camelCase the app expects.
@@ -153,6 +175,7 @@ const imageUsageByUser = new Map();
 const referrals = [];
 const savedItems = [];
 const brainItems = [];
+const chatsByUserAgent = new Map(); // key: `${userId}:${agentId}` -> [messages]
 let nextId = 1;
 
 const memoryDb = {
@@ -203,6 +226,28 @@ const memoryDb = {
     const i = brainItems.findIndex(b => b.userId === userId && b.id === id);
     if (i >= 0) brainItems.splice(i, 1);
     return i >= 0;
+  },
+  async getChat(userId, agentId) {
+    return chatsByUserAgent.get(`${userId}:${agentId}`) || [];
+  },
+  async saveChat(userId, agentId, messages) {
+    // Keep the most recent 100 messages to bound storage.
+    chatsByUserAgent.set(`${userId}:${agentId}`, (messages || []).slice(-100));
+    return true;
+  },
+  async clearChat(userId, agentId) {
+    chatsByUserAgent.delete(`${userId}:${agentId}`);
+    return true;
+  },
+  async listChats(userId) {
+    const out = [];
+    for (const [key, messages] of chatsByUserAgent.entries()) {
+      const [uid, agentId] = key.split(":");
+      if (Number(uid) === Number(userId) && messages?.length) {
+        out.push({ agentId, count: messages.length, messages });
+      }
+    }
+    return out;
   },
 };
 
