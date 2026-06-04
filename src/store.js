@@ -1,75 +1,210 @@
 // ----------------------------------------------------------------------------
-// SIMPLE IN-MEMORY STORE (for development only).
+// DATA STORE
 //
-// This lets the backend run with zero setup. For production, replace these
-// functions with real database calls (Postgres via Supabase/Prisma, etc.).
-// The function signatures are what the rest of the app depends on — keep them
-// the same and only change the bodies.
+// Uses Supabase (Postgres) when SUPABASE_URL + SUPABASE_SERVICE_KEY are set;
+// otherwise falls back to an in-memory store so the app still runs with zero
+// setup (data resets on restart in that mode).
+//
+// All methods are ASYNC. Routes await them.
 // ----------------------------------------------------------------------------
+import { createClient } from "@supabase/supabase-js";
 
-const users = new Map();        // email -> user object
-const usageByUser = new Map();  // userId -> number of tasks this period
-const referrals = [];           // { code, referrerId, referredEmail, plan, status }
+export const COMMISSION_RATE = 0.30; // 30% recurring
+export const PLAN_LIMITS = { indie: 500, artist: 10000, label: 100000 };
+// Monthly AI image generation caps per plan (covers art + promos cost real money).
+export const IMAGE_LIMITS = { indie: 35, artist: 100, label: 500 };
 
-let nextId = 1;
+const useSupabase = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
+const sb = useSupabase
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+  : null;
 
-export const db = {
-  createUser({ email, passwordHash, referralCode }) {
-    if (users.has(email)) throw new Error("Email already registered");
-    const user = {
-      id: nextId++,
-      email,
-      passwordHash,
-      plan: "indie",
-      referralCode: "AF-" + Math.random().toString(36).slice(2, 8).toUpperCase(),
-      referredBy: referralCode || null,
-      createdAt: new Date().toISOString(),
+function genCode() { return "AF-" + Math.random().toString(36).slice(2, 8).toUpperCase(); }
+
+// ---------------------------------------------------------------------------
+// SUPABASE IMPLEMENTATION
+// ---------------------------------------------------------------------------
+const supabaseDb = {
+  async createUser({ email, passwordHash, referralCode }) {
+    const { data: existing } = await sb.from("users").select("id").eq("email", email).maybeSingle();
+    if (existing) throw new Error("Email already registered");
+    const row = {
+      email, password_hash: passwordHash, plan: "indie",
+      referral_code: genCode(), referred_by: referralCode || null,
     };
-    users.set(email, user);
+    const { data, error } = await sb.from("users").insert(row).select().single();
+    if (error) throw new Error(error.message);
     if (referralCode) {
-      referrals.push({ code: referralCode, referredEmail: email, plan: "indie", status: "trial" });
+      await sb.from("referrals").insert({ code: referralCode, referred_email: email, plan: "indie", status: "trial" });
     }
-    return user;
+    return mapUser(data);
   },
-  findByEmail(email) { return users.get(email) || null; },
-  findById(id) { return [...users.values()].find(u => u.id === id) || null; },
-  findByReferralCode(code) { return [...users.values()].find(u => u.referralCode === code) || null; },
-  setPlan(userId, plan) {
-    const u = this.findById(userId);
-    if (u) u.plan = plan;
+  async findByEmail(email) {
+    const { data } = await sb.from("users").select("*").eq("email", email).maybeSingle();
+    return data ? mapUser(data) : null;
   },
-  // Stripe Connect account id for paying this user (referrer) out.
-  setConnectAccount(userId, acctId) {
-    const u = this.findById(userId);
-    if (u) u.stripeConnectId = acctId;
+  async findById(id) {
+    const { data } = await sb.from("users").select("*").eq("id", id).maybeSingle();
+    return data ? mapUser(data) : null;
+  },
+  async findByReferralCode(code) {
+    const { data } = await sb.from("users").select("*").eq("referral_code", code).maybeSingle();
+    return data ? mapUser(data) : null;
+  },
+  async setPlan(userId, plan) {
+    await sb.from("users").update({ plan }).eq("id", userId);
+  },
+  async setConnectAccount(userId, acctId) {
+    await sb.from("users").update({ stripe_connect_id: acctId }).eq("id", userId);
   },
 
-  // Usage metering
-  getUsage(userId) { return usageByUser.get(userId) || 0; },
-  incrementUsage(userId, by = 1) {
-    usageByUser.set(userId, this.getUsage(userId) + by);
-    return this.getUsage(userId);
+  async getUsage(userId) {
+    const { data } = await sb.from("usage").select("count").eq("user_id", userId).maybeSingle();
+    return data?.count || 0;
+  },
+  async incrementUsage(userId, by = 1) {
+    const current = await this.getUsage(userId);
+    const next = current + by;
+    await sb.from("usage").upsert({ user_id: userId, count: next }, { onConflict: "user_id" });
+    return next;
+  },
+  async getImageUsage(userId) {
+    const { data } = await sb.from("usage").select("image_count").eq("user_id", userId).maybeSingle();
+    return data?.image_count || 0;
+  },
+  async incrementImageUsage(userId, by = 1) {
+    const current = await this.getImageUsage(userId);
+    const next = current + by;
+    await sb.from("usage").upsert({ user_id: userId, image_count: next }, { onConflict: "user_id" });
+    return next;
   },
 
-  // Referrals
-  listReferralsFor(code) { return referrals.filter(r => r.code === code); },
-  // When a referred user pays, mark active and credit the referrer's commission.
-  recordReferralConversion(referredEmail, plan, monthlyCents) {
-    const r = referrals.find(x => x.referredEmail === referredEmail);
-    if (!r) return null;
-    r.status = "active";
-    r.plan = plan;
-    r.commissionCents = Math.round(monthlyCents * COMMISSION_RATE);
-    return r;
+  async listReferralsFor(code) {
+    const { data } = await sb.from("referrals").select("*").eq("code", code);
+    return (data || []).map(mapReferral);
   },
-  // Total owed to a referrer (sum of active referrals' monthly commission).
-  commissionOwed(code) {
-    return referrals.filter(r => r.code === code && r.status === "active")
-      .reduce((sum, r) => sum + (r.commissionCents || 0), 0);
+  async recordReferralConversion(referredEmail, plan, monthlyCents) {
+    const commissionCents = Math.round(monthlyCents * COMMISSION_RATE);
+    const { data } = await sb.from("referrals")
+      .update({ status: "active", plan, commission_cents: commissionCents })
+      .eq("referred_email", referredEmail).select().maybeSingle();
+    return data ? mapReferral(data) : null;
+  },
+  async commissionOwed(code) {
+    const { data } = await sb.from("referrals").select("commission_cents").eq("code", code).eq("status", "active");
+    return (data || []).reduce((sum, r) => sum + (r.commission_cents || 0), 0);
+  },
+
+  async listSaved(userId) {
+    const { data } = await sb.from("saved_items").select("*").eq("user_id", userId).order("id", { ascending: false });
+    return (data || []).map(mapSaved);
+  },
+  async addSaved(userId, tool, text) {
+    const { data, error } = await sb.from("saved_items")
+      .insert({ user_id: userId, tool, text }).select().single();
+    if (error) throw new Error(error.message);
+    return mapSaved(data);
+  },
+  async deleteSaved(userId, id) {
+    const { error } = await sb.from("saved_items").delete().eq("user_id", userId).eq("id", id);
+    return !error;
+  },
+  async listBrain(userId) {
+    const { data } = await sb.from("brain_items").select("*").eq("user_id", userId).order("id", { ascending: false });
+    return (data || []).map(mapBrain);
+  },
+  async addBrain(userId, kind, label, content) {
+    const { data, error } = await sb.from("brain_items")
+      .insert({ user_id: userId, kind, label, content }).select().single();
+    if (error) throw new Error(error.message);
+    return mapBrain(data);
+  },
+  async deleteBrain(userId, id) {
+    const { error } = await sb.from("brain_items").delete().eq("user_id", userId).eq("id", id);
+    return !error;
   },
 };
 
-export const COMMISSION_RATE = 0.30; // 30% recurring
+// Map snake_case DB rows to the camelCase the app expects.
+function mapUser(r) {
+  return {
+    id: r.id, email: r.email, passwordHash: r.password_hash, plan: r.plan,
+    referralCode: r.referral_code, referredBy: r.referred_by,
+    stripeConnectId: r.stripe_connect_id, createdAt: r.created_at,
+  };
+}
+function mapReferral(r) {
+  return { code: r.code, referredEmail: r.referred_email, plan: r.plan,
+    status: r.status, commissionCents: r.commission_cents };
+}
+function mapSaved(r) {
+  return { id: r.id, userId: r.user_id, tool: r.tool, text: r.text, when: r.created_at };
+}
+function mapBrain(r) {
+  return { id: r.id, userId: r.user_id, kind: r.kind, label: r.label, content: r.content, when: r.created_at };
+}
 
-// Monthly task caps per plan — enforce in the chat route.
-export const PLAN_LIMITS = { indie: 500, artist: 10000, label: 100000 };
+// ---------------------------------------------------------------------------
+// IN-MEMORY FALLBACK (async wrappers so the interface matches)
+// ---------------------------------------------------------------------------
+const users = new Map();
+const usageByUser = new Map();
+const imageUsageByUser = new Map();
+const referrals = [];
+const savedItems = [];
+const brainItems = [];
+let nextId = 1;
+
+const memoryDb = {
+  async createUser({ email, passwordHash, referralCode }) {
+    if (users.has(email)) throw new Error("Email already registered");
+    const user = { id: nextId++, email, passwordHash, plan: "indie",
+      referralCode: genCode(), referredBy: referralCode || null, createdAt: new Date().toISOString() };
+    users.set(email, user);
+    if (referralCode) referrals.push({ code: referralCode, referredEmail: email, plan: "indie", status: "trial" });
+    return user;
+  },
+  async findByEmail(email) { return users.get(email) || null; },
+  async findById(id) { return [...users.values()].find(u => u.id === id) || null; },
+  async findByReferralCode(code) { return [...users.values()].find(u => u.referralCode === code) || null; },
+  async setPlan(userId, plan) { const u = await this.findById(userId); if (u) u.plan = plan; },
+  async setConnectAccount(userId, acctId) { const u = await this.findById(userId); if (u) u.stripeConnectId = acctId; },
+  async getUsage(userId) { return usageByUser.get(userId) || 0; },
+  async incrementUsage(userId, by = 1) { const n = (usageByUser.get(userId) || 0) + by; usageByUser.set(userId, n); return n; },
+  async getImageUsage(userId) { return imageUsageByUser.get(userId) || 0; },
+  async incrementImageUsage(userId, by = 1) { const n = (imageUsageByUser.get(userId) || 0) + by; imageUsageByUser.set(userId, n); return n; },
+  async listReferralsFor(code) { return referrals.filter(r => r.code === code); },
+  async recordReferralConversion(referredEmail, plan, monthlyCents) {
+    const r = referrals.find(x => x.referredEmail === referredEmail);
+    if (!r) return null;
+    r.status = "active"; r.plan = plan; r.commissionCents = Math.round(monthlyCents * COMMISSION_RATE);
+    return r;
+  },
+  async commissionOwed(code) {
+    return referrals.filter(r => r.code === code && r.status === "active")
+      .reduce((sum, r) => sum + (r.commissionCents || 0), 0);
+  },
+  async listSaved(userId) { return savedItems.filter(s => s.userId === userId).sort((a, b) => b.id - a.id); },
+  async addSaved(userId, tool, text) {
+    const item = { id: Date.now() + Math.floor(Math.random() * 1000), userId, tool, text, when: new Date().toISOString() };
+    savedItems.push(item); return item;
+  },
+  async deleteSaved(userId, id) {
+    const i = savedItems.findIndex(s => s.userId === userId && s.id === id);
+    if (i >= 0) savedItems.splice(i, 1);
+    return i >= 0;
+  },
+  async listBrain(userId) { return brainItems.filter(b => b.userId === userId).sort((a, b) => b.id - a.id); },
+  async addBrain(userId, kind, label, content) {
+    const item = { id: Date.now() + Math.floor(Math.random() * 1000), userId, kind, label, content, when: new Date().toISOString() };
+    brainItems.push(item); return item;
+  },
+  async deleteBrain(userId, id) {
+    const i = brainItems.findIndex(b => b.userId === userId && b.id === id);
+    if (i >= 0) brainItems.splice(i, 1);
+    return i >= 0;
+  },
+};
+
+export const db = useSupabase ? supabaseDb : memoryDb;
+console.log(useSupabase ? "Store: Supabase (persistent)" : "Store: in-memory (dev only)");

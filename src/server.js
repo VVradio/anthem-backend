@@ -7,6 +7,11 @@ import authRouter from "./routes/auth.js";
 import billingRouter, { stripeWebhook } from "./routes/billing.js";
 import referralRouter from "./routes/referral.js";
 import streamsRouter from "./routes/streams.js";
+import savedRouter from "./routes/saved.js";
+import imageRouter from "./routes/image.js";
+import salesRouter from "./routes/sales.js";
+import brainRouter from "./routes/brain.js";
+import extractRouter from "./routes/extract.js";
 
 dotenv.config();
 
@@ -25,6 +30,11 @@ app.use("/api/chat", chatRouter);
 app.use("/api/billing", billingRouter);
 app.use("/api/referral", referralRouter);
 app.use("/api/streams", streamsRouter);
+app.use("/api/saved", savedRouter);
+app.use("/api/image", imageRouter);
+app.use("/api/sales", salesRouter);
+app.use("/api/brain", brainRouter);
+app.use("/api/extract", extractRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Anthem backend running on :${PORT}`));
