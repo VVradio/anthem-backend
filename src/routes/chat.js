@@ -24,16 +24,27 @@ const IMAGE_AGENT = "image";
 // POST /api/chat  { agentId, messages:[{role,content}] }
 router.post("/", requireAuth, async (req, res) => {
   const { agentId, messages } = req.body || {};
-  const system = SYSTEM_PROMPTS[agentId];
-  if (!system) return res.status(400).json({ error: "Unknown agentId" });
+  const baseSystem = SYSTEM_PROMPTS[agentId];
+  if (!baseSystem) return res.status(400).json({ error: "Unknown agentId" });
   if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
 
   // Enforce the monthly task limit for the user's plan.
-  const used = db.getUsage(req.user.id);
+  const used = await db.getUsage(req.user.id);
   const limit = PLAN_LIMITS[req.user.plan] ?? Object.values(PLAN_LIMITS)[0];
   if (used >= limit) {
     return res.status(402).json({ error: "Monthly task limit reached. Upgrade your plan." });
   }
+
+  // Pull the artist's "brain" (notes + site content) and add it to the persona,
+  // so every agent knows what the artist has taught Anthem about them.
+  let system = baseSystem;
+  try {
+    const brain = await db.listBrain(req.user.id);
+    if (brain.length) {
+      const knowledge = brain.map(b => `• ${b.label || b.kind}: ${b.content}`).join("\n").slice(0, 8000);
+      system += `\n\nThe artist has shared the following about themselves — use it to personalize everything:\n${knowledge}`;
+    }
+  } catch { /* brain optional */ }
 
   try {
     const result = await anthropic.messages.create({
@@ -42,7 +53,7 @@ router.post("/", requireAuth, async (req, res) => {
       system,
       messages: messages.map(m => ({ role: m.role, content: m.content })),
     });
-    db.incrementUsage(req.user.id);
+    await db.incrementUsage(req.user.id);
     const raw = result.content.filter(b => b.type === "text").map(b => b.text).join("\n");
 
     if (agentId === IMAGE_AGENT) {
