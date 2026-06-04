@@ -13,6 +13,8 @@ import salesRouter from "./routes/sales.js";
 import brainRouter from "./routes/brain.js";
 import extractRouter from "./routes/extract.js";
 import historyRouter from "./routes/history.js";
+import socialRouter from "./routes/social.js";
+import hostRouter from "./routes/host.js";
 
 dotenv.config();
 
@@ -37,6 +39,8 @@ app.use("/api/sales", salesRouter);
 app.use("/api/brain", brainRouter);
 app.use("/api/extract", extractRouter);
 app.use("/api/history", historyRouter);
+app.use("/api/social", socialRouter);
+app.use("/api/host", hostRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Anthem backend running on :${PORT}`));
