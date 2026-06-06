@@ -16,6 +16,7 @@ import historyRouter from "./routes/history.js";
 import socialRouter from "./routes/social.js";
 import hostRouter from "./routes/host.js";
 import teamRouter from "./routes/team.js";
+import featuresRouter from "./routes/features.js";
 
 dotenv.config();
 
@@ -43,6 +44,28 @@ app.use("/api/history", historyRouter);
 app.use("/api/social", socialRouter);
 app.use("/api/host", hostRouter);
 app.use("/api/team", teamRouter);
+app.use("/api/features", featuresRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Anthem backend running on :${PORT}`));
+
+// --- Daily job: email trial users whose trial ends within ~24h ---
+import { db } from "./store.js";
+import { sendEmail, trialEndingEmail } from "./email.js";
+const sentReminders = new Set(); // avoid double-sending in one process run
+async function runTrialReminders() {
+  try {
+    if (!db.getTrialsEndingSoon) return;
+    const soon = await db.getTrialsEndingSoon();
+    for (const u of soon) {
+      if (sentReminders.has(u.id)) continue;
+      const e = trialEndingEmail(u.email);
+      const r = await sendEmail(u.email, e.subject, e.html);
+      if (r?.ok) sentReminders.add(u.id);
+    }
+    if (soon.length) console.log(`Trial reminders processed: ${soon.length}`);
+  } catch (e) { console.error("Trial reminder job error:", e); }
+}
+// Run shortly after boot, then every 12 hours.
+setTimeout(runTrialReminders, 30000);
+setInterval(runTrialReminders, 12 * 60 * 60 * 1000);

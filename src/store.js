@@ -65,6 +65,22 @@ const supabaseDb = {
   async setPlan(userId, plan) {
     await sb.from("users").update({ plan }).eq("id", userId);
   },
+  async setSeats(userId, seats) {
+    await sb.from("users").update({ seats }).eq("id", userId);
+  },
+  async getSeats(userId) {
+    const { data } = await sb.from("users").select("seats").eq("id", userId).maybeSingle();
+    return data?.seats || 0;
+  },
+  // Trial users whose 2-day trial ends within the next 24h (for reminder emails).
+  async getTrialsEndingSoon() {
+    const now = Date.now();
+    const startMin = new Date(now - 2 * 864e5).toISOString();      // created ~2 days ago
+    const startMax = new Date(now - 1 * 864e5).toISOString();      // created ~1 day ago
+    const { data } = await sb.from("users").select("id, email, created_at, plan")
+      .eq("plan", "trial").gte("created_at", startMin).lte("created_at", startMax);
+    return (data || []).map(u => ({ id: u.id, email: u.email, createdAt: u.created_at }));
+  },
   async setConnectAccount(userId, acctId) {
     await sb.from("users").update({ stripe_connect_id: acctId }).eq("id", userId);
   },
@@ -189,6 +205,10 @@ const supabaseDb = {
     await sb.from("users").update({ org_id: memberId }).eq("id", memberId).eq("org_id", orgId);
     return true;
   },
+  async addFeatureRequest(userId, email, text) {
+    await sb.from("feature_requests").insert({ user_id: userId, email, text });
+    return true;
+  },
 };
 
 // Map snake_case DB rows to the camelCase the app expects.
@@ -222,6 +242,7 @@ const savedItems = [];
 const brainItems = [];
 const chatsByUserAgent = new Map(); // key: `${userId}:${agentId}` -> [messages]
 const teamInvites = []; // { id, orgId, email, status, createdAt }
+const featureRequests = []; // { id, userId, email, text, createdAt }
 let nextId = 1;
 
 const memoryDb = {
@@ -242,6 +263,16 @@ const memoryDb = {
   async findById(id) { return [...users.values()].find(u => u.id === id) || null; },
   async findByReferralCode(code) { return [...users.values()].find(u => u.referralCode === code) || null; },
   async setPlan(userId, plan) { const u = await this.findById(userId); if (u) u.plan = plan; },
+  async setSeats(userId, seats) { const u = await this.findById(userId); if (u) u.seats = seats; },
+  async getSeats(userId) { const u = await this.findById(userId); return u?.seats || 0; },
+  async getTrialsEndingSoon() {
+    const now = Date.now();
+    return [...users.values()].filter(u => {
+      if (u.plan !== "trial" || !u.createdAt) return false;
+      const age = now - new Date(u.createdAt).getTime();
+      return age >= 1 * 864e5 && age <= 2 * 864e5; // between 1 and 2 days old
+    }).map(u => ({ id: u.id, email: u.email, createdAt: u.createdAt }));
+  },
   async setConnectAccount(userId, acctId) { const u = await this.findById(userId); if (u) u.stripeConnectId = acctId; },
   async getUsage(userId) { return usageByUser.get(userId) || 0; },
   async incrementUsage(userId, by = 1) { const n = (usageByUser.get(userId) || 0) + by; usageByUser.set(userId, n); return n; },
@@ -330,6 +361,10 @@ const memoryDb = {
   async removeMember(orgId, memberId) {
     if (memberId === orgId) return false;
     const u = await this.findById(memberId); if (u && (u.orgId === orgId)) u.orgId = memberId;
+    return true;
+  },
+  async addFeatureRequest(userId, email, text) {
+    featureRequests.push({ id: nextId++, userId, email, text, createdAt: new Date().toISOString() });
     return true;
   },
 };
