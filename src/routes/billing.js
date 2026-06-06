@@ -2,7 +2,6 @@ import { Router } from "express";
 import Stripe from "stripe";
 import { requireAuth } from "../middleware/auth.js";
 import { db } from "../store.js";
-import { sendEmail, paymentEmail } from "../email.js";
 
 const router = Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
@@ -54,31 +53,6 @@ router.post("/checkout", requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/billing/seats  { quantity } — buy team seats at $10/seat/month.
-router.post("/seats", requireAuth, async (req, res) => {
-  const quantity = Math.max(1, Math.min(50, Number(req.body?.quantity) || 1));
-  const price = process.env.STRIPE_PRICE_SEAT;
-  if (!price) return res.status(503).json({ error: "Seat billing isn't set up yet. Add STRIPE_PRICE_SEAT." });
-  if (!process.env.STRIPE_SECRET_KEY) {
-    return res.status(503).json({ error: "Payments not configured yet." });
-  }
-  try {
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      line_items: [{ price, quantity }],
-      customer_email: req.user.email,
-      allow_promotion_codes: true,
-      success_url: `${process.env.CLIENT_ORIGIN}/?seats=1`,
-      cancel_url: `${process.env.CLIENT_ORIGIN}/?canceled=1`,
-      metadata: { userId: String(req.user.id), kind: "seats", quantity: String(quantity) },
-    });
-    res.json({ url: session.url });
-  } catch (e) {
-    console.error(e);
-    res.status(502).json({ error: "Stripe error" });
-  }
-});
-
 // ---- STRIPE WEBHOOK: confirms payment, upgrades the user's plan ----
 // Registered with express.raw() in server.js (must verify the raw body).
 export async function stripeWebhook(req, res) {
@@ -92,30 +66,12 @@ export async function stripeWebhook(req, res) {
   if (event.type === "checkout.session.completed") {
     const s = event.data.object;
     const userId = Number(s.metadata?.userId);
-    const buyerEmail = s.customer_email || s.customer_details?.email;
-    if (s.metadata?.kind === "seats") {
-      // Team seats purchased — record how many this org paid for.
-      const qty = Number(s.metadata?.quantity) || 1;
-      if (userId && db.setSeats) await db.setSeats(userId, qty);
-      if (buyerEmail) {
-        const e = paymentEmail(buyerEmail, `${qty} team seat${qty > 1 ? "s" : ""}`, `$${qty * 10}/mo`);
-        sendEmail(buyerEmail, e.subject, e.html).catch(() => {});
-      }
-    } else {
-      const plan = s.metadata?.plan;
-      if (userId && plan) await db.setPlan(userId, plan);
-      // Credit the referrer's 30% commission, if this user was referred.
-      const user = userId ? await db.findById(userId) : null;
-      if (user?.referredBy && plan) {
-        await db.recordReferralConversion(user.email, plan, PLAN_CENTS[plan] || 0);
-      }
-      // Send a payment confirmation / receipt email.
-      if (buyerEmail && plan) {
-        const planName = { indie: "Indie", artist: "Artist", label: "Label" }[plan] || plan;
-        const amt = PLAN_CENTS[plan] ? `$${(PLAN_CENTS[plan] / 100).toFixed(0)}/mo` : "";
-        const e = paymentEmail(buyerEmail, planName, amt);
-        sendEmail(buyerEmail, e.subject, e.html).catch(() => {});
-      }
+    const plan = s.metadata?.plan;
+    if (userId && plan) await db.setPlan(userId, plan);
+    // Credit the referrer's 30% commission, if this user was referred.
+    const user = userId ? await db.findById(userId) : null;
+    if (user?.referredBy && plan) {
+      await db.recordReferralConversion(user.email, plan, PLAN_CENTS[plan] || 0);
     }
   }
   res.json({ received: true });
