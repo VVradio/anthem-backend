@@ -17,7 +17,6 @@ import socialRouter from "./routes/social.js";
 import hostRouter from "./routes/host.js";
 import teamRouter from "./routes/team.js";
 import featuresRouter from "./routes/features.js";
-import adminRouter from "./routes/admin.js";
 
 dotenv.config();
 
@@ -46,7 +45,6 @@ app.use("/api/social", socialRouter);
 app.use("/api/host", hostRouter);
 app.use("/api/team", teamRouter);
 app.use("/api/features", featuresRouter);
-app.use("/api/admin", adminRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Anthem backend running on :${PORT}`));
