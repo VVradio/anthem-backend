@@ -60,3 +60,18 @@ export function trialEndingEmail(email) {
       </div>`,
   };
 }
+
+export function paymentEmail(email, planName, amountText) {
+  return {
+    subject: "Payment received — you're all set on Anthem ✅",
+    html: `
+      <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;color:#1f1a16">
+        <h2 style="color:#7b8b6f">Payment received — thank you!</h2>
+        <p>Your <b>${planName || "Anthem"}</b> plan is now active${amountText ? ` (${amountText})` : ""}.
+        Your AI music team is fully unlocked and ready to go.</p>
+        <p><a href="${SITE}" style="display:inline-block;background:#c2542d;color:#fff;
+          text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600">Open your studio</a></p>
+        <p style="color:#6b6258;font-size:13px">This email is your receipt. Questions? Just reply.<br>— The Anthem team</p>
+      </div>`,
+  };
+}
