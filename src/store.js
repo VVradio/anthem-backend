@@ -65,6 +65,18 @@ const supabaseDb = {
   async setPlan(userId, plan) {
     await sb.from("users").update({ plan }).eq("id", userId);
   },
+  async setPassword(userId, passwordHash) {
+    await sb.from("users").update({ password_hash: passwordHash }).eq("id", userId);
+  },
+  async listAllUsers() {
+    const { data } = await sb.from("users")
+      .select("id, email, plan, created_at, seats, referred_by")
+      .order("created_at", { ascending: false });
+    return (data || []).map(u => ({
+      id: u.id, email: u.email, plan: u.plan, createdAt: u.created_at,
+      seats: u.seats || 0, referredBy: u.referred_by || null,
+    }));
+  },
   async setSeats(userId, seats) {
     await sb.from("users").update({ seats }).eq("id", userId);
   },
@@ -263,6 +275,13 @@ const memoryDb = {
   async findById(id) { return [...users.values()].find(u => u.id === id) || null; },
   async findByReferralCode(code) { return [...users.values()].find(u => u.referralCode === code) || null; },
   async setPlan(userId, plan) { const u = await this.findById(userId); if (u) u.plan = plan; },
+  async setPassword(userId, passwordHash) { const u = await this.findById(userId); if (u) u.passwordHash = passwordHash; },
+  async listAllUsers() {
+    return [...users.values()].map(u => ({
+      id: u.id, email: u.email, plan: u.plan, createdAt: u.createdAt,
+      seats: u.seats || 0, referredBy: u.referredBy || null,
+    })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  },
   async setSeats(userId, seats) { const u = await this.findById(userId); if (u) u.seats = seats; },
   async getSeats(userId) { const u = await this.findById(userId); return u?.seats || 0; },
   async getTrialsEndingSoon() {
