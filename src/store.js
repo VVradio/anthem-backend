@@ -179,15 +179,21 @@ const supabaseDb = {
     return !error;
   },
   async getSettings(userId) {
-    const { data } = await sb.from("users").select("timezone, business_hours").eq("id", userId).maybeSingle();
-    return { timezone: data?.timezone || null, businessHours: data?.business_hours || null };
+    const { data } = await sb.from("users").select("timezone, business_hours, weekly_digest").eq("id", userId).maybeSingle();
+    return { timezone: data?.timezone || null, businessHours: data?.business_hours || null,
+      weeklyDigest: data?.weekly_digest !== false };
   },
-  async setSettings(userId, { timezone, businessHours }) {
+  async setSettings(userId, { timezone, businessHours, weeklyDigest }) {
     const patch = {};
     if (timezone !== undefined) patch.timezone = timezone;
     if (businessHours !== undefined) patch.business_hours = businessHours;
+    if (weeklyDigest !== undefined) patch.weekly_digest = weeklyDigest;
     await sb.from("users").update(patch).eq("id", userId);
     return true;
+  },
+  async getDigestRecipients() {
+    const { data } = await sb.from("users").select("id, email").neq("weekly_digest", false);
+    return (data || []).map(u => ({ id: u.id, email: u.email }));
   },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
@@ -432,10 +438,21 @@ const memoryDb = {
     if (i >= 0) bookings.splice(i, 1);
     return true;
   },
-  async getSettings(userId) { return settingsByUser.get(userId) || { timezone: null, businessHours: null }; },
+  async getSettings(userId) {
+    const s = settingsByUser.get(userId) || {};
+    return { timezone: s.timezone || null, businessHours: s.businessHours || null,
+      weeklyDigest: s.weeklyDigest !== false };
+  },
   async setSettings(userId, patch) {
-    const cur = settingsByUser.get(userId) || { timezone: null, businessHours: null };
-    settingsByUser.set(userId, { ...cur, ...patch }); return true;
+    const cur = settingsByUser.get(userId) || {};
+    const clean = {};
+    for (const k of Object.keys(patch)) if (patch[k] !== undefined) clean[k] = patch[k];
+    settingsByUser.set(userId, { ...cur, ...clean }); return true;
+  },
+  async getDigestRecipients() {
+    return [...users.values()]
+      .filter(u => (settingsByUser.get(u.id)?.weeklyDigest !== false))
+      .map(u => ({ id: u.id, email: u.email }));
   },
 };
 
