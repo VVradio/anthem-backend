@@ -33,4 +33,15 @@ router.post("/user/:id/plan", requireAuth, requireOwner, async (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/admin/user/:id — permanently delete a user/signup.
+router.delete("/user/:id", requireAuth, requireOwner, async (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.user.id) return res.status(400).json({ error: "You can't delete your own account here." });
+  const target = await db.findById(id);
+  if (!target) return res.status(404).json({ error: "User not found" });
+  if (isOwner(target)) return res.status(400).json({ error: "Can't delete an owner account." });
+  await db.deleteUser(id);
+  res.json({ ok: true });
+});
+
 export default router;
