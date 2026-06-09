@@ -207,6 +207,33 @@ const supabaseDb = {
     const { data } = await sb.from("epks").select("data").eq("share_code", code).maybeSingle();
     return data ? data.data : null;
   },
+  async listReleases(userId) {
+    const { data } = await sb.from("releases").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    return (data || []).map(mapRelease);
+  },
+  async addRelease(userId, r) {
+    const { data, error } = await sb.from("releases").insert({
+      user_id: userId, title: r.title, splits: r.splits || [], revenue_cents: r.revenueCents || 0 }).select().single();
+    if (error) throw new Error(error.message);
+    return mapRelease(data);
+  },
+  async updateRelease(userId, id, patch) {
+    const p = {};
+    if (patch.title !== undefined) p.title = patch.title;
+    if (patch.splits !== undefined) p.splits = patch.splits;
+    if (patch.revenueCents !== undefined) p.revenue_cents = patch.revenueCents;
+    if (patch.shareCode !== undefined) p.share_code = patch.shareCode;
+    const { data } = await sb.from("releases").update(p).eq("user_id", userId).eq("id", id).select().single();
+    return data ? mapRelease(data) : null;
+  },
+  async deleteRelease(userId, id) {
+    await sb.from("releases").delete().eq("user_id", userId).eq("id", id);
+    return true;
+  },
+  async getReleaseByCode(code) {
+    const { data } = await sb.from("releases").select("*").eq("share_code", code).maybeSingle();
+    return data ? mapRelease(data) : null;
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -291,6 +318,10 @@ function mapBooking(r) {
   return { id: r.id, userId: r.user_id, title: r.title, withWho: r.with_who,
     startsAt: r.starts_at, endsAt: r.ends_at, notes: r.notes, meetLink: r.meet_link };
 }
+function mapRelease(r) {
+  return { id: r.id, userId: r.user_id, title: r.title, splits: r.splits || [],
+    revenueCents: r.revenue_cents || 0, shareCode: r.share_code || null };
+}
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY FALLBACK (async wrappers so the interface matches)
@@ -308,6 +339,7 @@ const bookings = []; // { id, userId, title, withWho, startsAt, endsAt, notes, m
 const settingsByUser = new Map(); // userId -> { timezone, businessHours }
 const epks = new Map(); // userId -> { shareCode, data }
 const epkByCode = new Map(); // shareCode -> userId
+const releases = []; // { id, userId, title, splits, revenueCents, shareCode }
 let nextId = 1;
 
 const memoryDb = {
@@ -473,6 +505,28 @@ const memoryDb = {
   },
   async getEpkByUser(userId) { return epks.get(userId) || null; },
   async getEpkByCode(code) { const uid = epkByCode.get(code); return uid ? (epks.get(uid)?.data || null) : null; },
+  async listReleases(userId) {
+    return releases.filter(r => r.userId === userId).sort((a, b) => b.id - a.id);
+  },
+  async addRelease(userId, r) {
+    const row = { id: nextId++, userId, title: r.title, splits: r.splits || [], revenueCents: r.revenueCents || 0, shareCode: null };
+    releases.push(row); return row;
+  },
+  async updateRelease(userId, id, patch) {
+    const row = releases.find(r => r.userId === userId && r.id === id);
+    if (!row) return null;
+    if (patch.title !== undefined) row.title = patch.title;
+    if (patch.splits !== undefined) row.splits = patch.splits;
+    if (patch.revenueCents !== undefined) row.revenueCents = patch.revenueCents;
+    if (patch.shareCode !== undefined) row.shareCode = patch.shareCode;
+    return row;
+  },
+  async deleteRelease(userId, id) {
+    const i = releases.findIndex(r => r.userId === userId && r.id === id);
+    if (i >= 0) releases.splice(i, 1);
+    return true;
+  },
+  async getReleaseByCode(code) { return releases.find(r => r.shareCode === code) || null; },
 };
 
 export const db = useSupabase ? supabaseDb : memoryDb;
