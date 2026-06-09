@@ -65,6 +65,34 @@ const supabaseDb = {
   async setPlan(userId, plan) {
     await sb.from("users").update({ plan }).eq("id", userId);
   },
+  async setPassword(userId, passwordHash) {
+    await sb.from("users").update({ password_hash: passwordHash }).eq("id", userId);
+  },
+  async listAllUsers() {
+    const { data } = await sb.from("users")
+      .select("id, email, plan, created_at, seats, referred_by")
+      .order("created_at", { ascending: false });
+    return (data || []).map(u => ({
+      id: u.id, email: u.email, plan: u.plan, createdAt: u.created_at,
+      seats: u.seats || 0, referredBy: u.referred_by || null,
+    }));
+  },
+  async setSeats(userId, seats) {
+    await sb.from("users").update({ seats }).eq("id", userId);
+  },
+  async getSeats(userId) {
+    const { data } = await sb.from("users").select("seats").eq("id", userId).maybeSingle();
+    return data?.seats || 0;
+  },
+  // Trial users whose 2-day trial ends within the next 24h (for reminder emails).
+  async getTrialsEndingSoon() {
+    const now = Date.now();
+    const startMin = new Date(now - 2 * 864e5).toISOString();      // created ~2 days ago
+    const startMax = new Date(now - 1 * 864e5).toISOString();      // created ~1 day ago
+    const { data } = await sb.from("users").select("id, email, created_at, plan")
+      .eq("plan", "trial").gte("created_at", startMin).lte("created_at", startMax);
+    return (data || []).map(u => ({ id: u.id, email: u.email, createdAt: u.created_at }));
+  },
   async setConnectAccount(userId, acctId) {
     await sb.from("users").update({ stripe_connect_id: acctId }).eq("id", userId);
   },
@@ -134,6 +162,124 @@ const supabaseDb = {
     const { error } = await sb.from("brain_items").delete().eq("user_id", userId).eq("id", id);
     return !error;
   },
+  async listBookings(userId) {
+    const { data } = await sb.from("bookings").select("*").eq("user_id", userId).order("starts_at", { ascending: true });
+    return (data || []).map(mapBooking);
+  },
+  async addBooking(userId, b) {
+    const { data, error } = await sb.from("bookings").insert({
+      user_id: userId, title: b.title, with_who: b.withWho || null, starts_at: b.startsAt,
+      ends_at: b.endsAt || null, notes: b.notes || null, meet_link: b.meetLink || null,
+    }).select().single();
+    if (error) throw new Error(error.message);
+    return mapBooking(data);
+  },
+  async deleteBooking(userId, id) {
+    const { error } = await sb.from("bookings").delete().eq("user_id", userId).eq("id", id);
+    return !error;
+  },
+  async getSettings(userId) {
+    const { data } = await sb.from("users").select("timezone, business_hours, weekly_digest").eq("id", userId).maybeSingle();
+    return { timezone: data?.timezone || null, businessHours: data?.business_hours || null,
+      weeklyDigest: data?.weekly_digest !== false };
+  },
+  async setSettings(userId, { timezone, businessHours, weeklyDigest }) {
+    const patch = {};
+    if (timezone !== undefined) patch.timezone = timezone;
+    if (businessHours !== undefined) patch.business_hours = businessHours;
+    if (weeklyDigest !== undefined) patch.weekly_digest = weeklyDigest;
+    await sb.from("users").update(patch).eq("id", userId);
+    return true;
+  },
+  async getDigestRecipients() {
+    const { data } = await sb.from("users").select("id, email").neq("weekly_digest", false);
+    return (data || []).map(u => ({ id: u.id, email: u.email }));
+  },
+  async saveEpk(userId, shareCode, data) {
+    await sb.from("epks").upsert({ user_id: userId, share_code: shareCode, data, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    return { shareCode };
+  },
+  async getEpkByUser(userId) {
+    const { data } = await sb.from("epks").select("share_code, data").eq("user_id", userId).maybeSingle();
+    return data ? { shareCode: data.share_code, data: data.data } : null;
+  },
+  async getEpkByCode(code) {
+    const { data } = await sb.from("epks").select("data").eq("share_code", code).maybeSingle();
+    return data ? data.data : null;
+  },
+  async listReleases(userId) {
+    const { data } = await sb.from("releases").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    return (data || []).map(mapRelease);
+  },
+  async addRelease(userId, r) {
+    const { data, error } = await sb.from("releases").insert({
+      user_id: userId, title: r.title, splits: r.splits || [], revenue_cents: r.revenueCents || 0 }).select().single();
+    if (error) throw new Error(error.message);
+    return mapRelease(data);
+  },
+  async updateRelease(userId, id, patch) {
+    const p = {};
+    if (patch.title !== undefined) p.title = patch.title;
+    if (patch.splits !== undefined) p.splits = patch.splits;
+    if (patch.revenueCents !== undefined) p.revenue_cents = patch.revenueCents;
+    if (patch.shareCode !== undefined) p.share_code = patch.shareCode;
+    const { data } = await sb.from("releases").update(p).eq("user_id", userId).eq("id", id).select().single();
+    return data ? mapRelease(data) : null;
+  },
+  async deleteRelease(userId, id) {
+    await sb.from("releases").delete().eq("user_id", userId).eq("id", id);
+    return true;
+  },
+  async getReleaseByCode(code) {
+    const { data } = await sb.from("releases").select("*").eq("share_code", code).maybeSingle();
+    return data ? mapRelease(data) : null;
+  },
+  async listFans(userId) {
+    const { data } = await sb.from("fans").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    return (data || []).map(f => ({ id: f.id, name: f.name, email: f.email, source: f.source, when: f.created_at }));
+  },
+  async addFan(userId, { name, email, source }) {
+    // Avoid duplicate emails per artist.
+    const { data: existing } = await sb.from("fans").select("id").eq("user_id", userId).eq("email", email).maybeSingle();
+    if (existing) return { duplicate: true };
+    const { data } = await sb.from("fans").insert({ user_id: userId, name: name || null, email, source: source || "manual" }).select().single();
+    return { id: data.id, name: data.name, email: data.email };
+  },
+  async deleteFan(userId, id) {
+    await sb.from("fans").delete().eq("user_id", userId).eq("id", id);
+    return true;
+  },
+  async getFanCode(userId) {
+    const { data } = await sb.from("users").select("fan_code").eq("id", userId).maybeSingle();
+    return data?.fan_code || null;
+  },
+  async setFanCode(userId, code) {
+    await sb.from("users").update({ fan_code: code }).eq("id", userId);
+    return true;
+  },
+  async findUserByFanCode(code) {
+    const { data } = await sb.from("users").select("id, email").eq("fan_code", code).maybeSingle();
+    return data ? { id: data.id, email: data.email } : null;
+  },
+  async listSyncTracks(userId) {
+    const { data } = await sb.from("sync_tracks").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    return (data || []).map(t => ({ id: t.id, title: t.title, data: t.data || {} }));
+  },
+  async addSyncTrack(userId, title, data) {
+    const { data: row } = await sb.from("sync_tracks").insert({ user_id: userId, title, data: data || {} }).select().single();
+    return { id: row.id, title: row.title, data: row.data || {} };
+  },
+  async updateSyncTrack(userId, id, patch) {
+    const p = {};
+    if (patch.title !== undefined) p.title = patch.title;
+    if (patch.data !== undefined) p.data = patch.data;
+    const { data } = await sb.from("sync_tracks").update(p).eq("user_id", userId).eq("id", id).select().single();
+    return data ? { id: data.id, title: data.title, data: data.data || {} } : null;
+  },
+  async deleteSyncTrack(userId, id) {
+    await sb.from("sync_tracks").delete().eq("user_id", userId).eq("id", id);
+    return true;
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -189,6 +335,10 @@ const supabaseDb = {
     await sb.from("users").update({ org_id: memberId }).eq("id", memberId).eq("org_id", orgId);
     return true;
   },
+  async addFeatureRequest(userId, email, text) {
+    await sb.from("feature_requests").insert({ user_id: userId, email, text });
+    return true;
+  },
 };
 
 // Map snake_case DB rows to the camelCase the app expects.
@@ -210,6 +360,14 @@ function mapSaved(r) {
 function mapBrain(r) {
   return { id: r.id, userId: r.user_id, kind: r.kind, label: r.label, content: r.content, when: r.created_at };
 }
+function mapBooking(r) {
+  return { id: r.id, userId: r.user_id, title: r.title, withWho: r.with_who,
+    startsAt: r.starts_at, endsAt: r.ends_at, notes: r.notes, meetLink: r.meet_link };
+}
+function mapRelease(r) {
+  return { id: r.id, userId: r.user_id, title: r.title, splits: r.splits || [],
+    revenueCents: r.revenue_cents || 0, shareCode: r.share_code || null };
+}
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY FALLBACK (async wrappers so the interface matches)
@@ -222,6 +380,14 @@ const savedItems = [];
 const brainItems = [];
 const chatsByUserAgent = new Map(); // key: `${userId}:${agentId}` -> [messages]
 const teamInvites = []; // { id, orgId, email, status, createdAt }
+const featureRequests = []; // { id, userId, email, text, createdAt }
+const bookings = []; // { id, userId, title, withWho, startsAt, endsAt, notes, meetLink }
+const settingsByUser = new Map(); // userId -> { timezone, businessHours }
+const epks = new Map(); // userId -> { shareCode, data }
+const epkByCode = new Map(); // shareCode -> userId
+const releases = []; // { id, userId, title, splits, revenueCents, shareCode }
+const fans = []; // { id, userId, name, email, source, when }
+const syncTracks = []; // { id, userId, title, data }
 let nextId = 1;
 
 const memoryDb = {
@@ -242,6 +408,23 @@ const memoryDb = {
   async findById(id) { return [...users.values()].find(u => u.id === id) || null; },
   async findByReferralCode(code) { return [...users.values()].find(u => u.referralCode === code) || null; },
   async setPlan(userId, plan) { const u = await this.findById(userId); if (u) u.plan = plan; },
+  async setPassword(userId, passwordHash) { const u = await this.findById(userId); if (u) u.passwordHash = passwordHash; },
+  async listAllUsers() {
+    return [...users.values()].map(u => ({
+      id: u.id, email: u.email, plan: u.plan, createdAt: u.createdAt,
+      seats: u.seats || 0, referredBy: u.referredBy || null,
+    })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  },
+  async setSeats(userId, seats) { const u = await this.findById(userId); if (u) u.seats = seats; },
+  async getSeats(userId) { const u = await this.findById(userId); return u?.seats || 0; },
+  async getTrialsEndingSoon() {
+    const now = Date.now();
+    return [...users.values()].filter(u => {
+      if (u.plan !== "trial" || !u.createdAt) return false;
+      const age = now - new Date(u.createdAt).getTime();
+      return age >= 1 * 864e5 && age <= 2 * 864e5; // between 1 and 2 days old
+    }).map(u => ({ id: u.id, email: u.email, createdAt: u.createdAt }));
+  },
   async setConnectAccount(userId, acctId) { const u = await this.findById(userId); if (u) u.stripeConnectId = acctId; },
   async getUsage(userId) { return usageByUser.get(userId) || 0; },
   async incrementUsage(userId, by = 1) { const n = (usageByUser.get(userId) || 0) + by; usageByUser.set(userId, n); return n; },
@@ -330,6 +513,106 @@ const memoryDb = {
   async removeMember(orgId, memberId) {
     if (memberId === orgId) return false;
     const u = await this.findById(memberId); if (u && (u.orgId === orgId)) u.orgId = memberId;
+    return true;
+  },
+  async addFeatureRequest(userId, email, text) {
+    featureRequests.push({ id: nextId++, userId, email, text, createdAt: new Date().toISOString() });
+    return true;
+  },
+  async listBookings(userId) {
+    return bookings.filter(b => b.userId === userId).sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt));
+  },
+  async addBooking(userId, b) {
+    const row = { id: nextId++, userId, title: b.title, withWho: b.withWho || null,
+      startsAt: b.startsAt, endsAt: b.endsAt || null, notes: b.notes || null, meetLink: b.meetLink || null };
+    bookings.push(row); return row;
+  },
+  async deleteBooking(userId, id) {
+    const i = bookings.findIndex(b => b.userId === userId && b.id === id);
+    if (i >= 0) bookings.splice(i, 1);
+    return true;
+  },
+  async getSettings(userId) {
+    const s = settingsByUser.get(userId) || {};
+    return { timezone: s.timezone || null, businessHours: s.businessHours || null,
+      weeklyDigest: s.weeklyDigest !== false };
+  },
+  async setSettings(userId, patch) {
+    const cur = settingsByUser.get(userId) || {};
+    const clean = {};
+    for (const k of Object.keys(patch)) if (patch[k] !== undefined) clean[k] = patch[k];
+    settingsByUser.set(userId, { ...cur, ...clean }); return true;
+  },
+  async getDigestRecipients() {
+    return [...users.values()]
+      .filter(u => (settingsByUser.get(u.id)?.weeklyDigest !== false))
+      .map(u => ({ id: u.id, email: u.email }));
+  },
+  async saveEpk(userId, shareCode, data) {
+    epks.set(userId, { shareCode, data }); epkByCode.set(shareCode, userId); return { shareCode };
+  },
+  async getEpkByUser(userId) { return epks.get(userId) || null; },
+  async getEpkByCode(code) { const uid = epkByCode.get(code); return uid ? (epks.get(uid)?.data || null) : null; },
+  async listReleases(userId) {
+    return releases.filter(r => r.userId === userId).sort((a, b) => b.id - a.id);
+  },
+  async addRelease(userId, r) {
+    const row = { id: nextId++, userId, title: r.title, splits: r.splits || [], revenueCents: r.revenueCents || 0, shareCode: null };
+    releases.push(row); return row;
+  },
+  async updateRelease(userId, id, patch) {
+    const row = releases.find(r => r.userId === userId && r.id === id);
+    if (!row) return null;
+    if (patch.title !== undefined) row.title = patch.title;
+    if (patch.splits !== undefined) row.splits = patch.splits;
+    if (patch.revenueCents !== undefined) row.revenueCents = patch.revenueCents;
+    if (patch.shareCode !== undefined) row.shareCode = patch.shareCode;
+    return row;
+  },
+  async deleteRelease(userId, id) {
+    const i = releases.findIndex(r => r.userId === userId && r.id === id);
+    if (i >= 0) releases.splice(i, 1);
+    return true;
+  },
+  async getReleaseByCode(code) { return releases.find(r => r.shareCode === code) || null; },
+  async listFans(userId) {
+    return fans.filter(f => f.userId === userId).sort((a, b) => b.id - a.id)
+      .map(f => ({ id: f.id, name: f.name, email: f.email, source: f.source, when: f.when }));
+  },
+  async addFan(userId, { name, email, source }) {
+    if (fans.find(f => f.userId === userId && f.email === email)) return { duplicate: true };
+    const row = { id: nextId++, userId, name: name || null, email, source: source || "manual", when: new Date().toISOString() };
+    fans.push(row); return { id: row.id, name: row.name, email: row.email };
+  },
+  async deleteFan(userId, id) {
+    const i = fans.findIndex(f => f.userId === userId && f.id === id);
+    if (i >= 0) fans.splice(i, 1);
+    return true;
+  },
+  async getFanCode(userId) { const u = await this.findById(userId); return u?.fanCode || null; },
+  async setFanCode(userId, code) { const u = await this.findById(userId); if (u) u.fanCode = code; return true; },
+  async findUserByFanCode(code) {
+    const u = [...users.values()].find(x => x.fanCode === code);
+    return u ? { id: u.id, email: u.email } : null;
+  },
+  async listSyncTracks(userId) {
+    return syncTracks.filter(t => t.userId === userId).sort((a, b) => b.id - a.id)
+      .map(t => ({ id: t.id, title: t.title, data: t.data || {} }));
+  },
+  async addSyncTrack(userId, title, data) {
+    const row = { id: nextId++, userId, title, data: data || {} };
+    syncTracks.push(row); return { id: row.id, title: row.title, data: row.data };
+  },
+  async updateSyncTrack(userId, id, patch) {
+    const row = syncTracks.find(t => t.userId === userId && t.id === id);
+    if (!row) return null;
+    if (patch.title !== undefined) row.title = patch.title;
+    if (patch.data !== undefined) row.data = patch.data;
+    return { id: row.id, title: row.title, data: row.data };
+  },
+  async deleteSyncTrack(userId, id) {
+    const i = syncTracks.findIndex(t => t.userId === userId && t.id === id);
+    if (i >= 0) syncTracks.splice(i, 1);
     return true;
   },
 };
