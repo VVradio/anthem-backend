@@ -17,6 +17,9 @@ import socialRouter from "./routes/social.js";
 import hostRouter from "./routes/host.js";
 import teamRouter from "./routes/team.js";
 import featuresRouter from "./routes/features.js";
+import adminRouter from "./routes/admin.js";
+import bookingsRouter from "./routes/bookings.js";
+import settingsRouter from "./routes/settings.js";
 
 dotenv.config();
 
@@ -45,9 +48,15 @@ app.use("/api/social", socialRouter);
 app.use("/api/host", hostRouter);
 app.use("/api/team", teamRouter);
 app.use("/api/features", featuresRouter);
+app.use("/api/admin", adminRouter);
+app.use("/api/bookings", bookingsRouter);
+app.use("/api/settings", settingsRouter);
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Anthem backend running on :${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Anthem backend running on :${PORT}`);
+  console.log("Email configured:", process.env.RESEND_API_KEY ? "YES (key detected)" : "NO (RESEND_API_KEY missing)");
+});
 
 // --- Daily job: email trial users whose trial ends within ~24h ---
 import { db } from "./store.js";

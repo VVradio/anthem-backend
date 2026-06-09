@@ -162,6 +162,33 @@ const supabaseDb = {
     const { error } = await sb.from("brain_items").delete().eq("user_id", userId).eq("id", id);
     return !error;
   },
+  async listBookings(userId) {
+    const { data } = await sb.from("bookings").select("*").eq("user_id", userId).order("starts_at", { ascending: true });
+    return (data || []).map(mapBooking);
+  },
+  async addBooking(userId, b) {
+    const { data, error } = await sb.from("bookings").insert({
+      user_id: userId, title: b.title, with_who: b.withWho || null, starts_at: b.startsAt,
+      ends_at: b.endsAt || null, notes: b.notes || null, meet_link: b.meetLink || null,
+    }).select().single();
+    if (error) throw new Error(error.message);
+    return mapBooking(data);
+  },
+  async deleteBooking(userId, id) {
+    const { error } = await sb.from("bookings").delete().eq("user_id", userId).eq("id", id);
+    return !error;
+  },
+  async getSettings(userId) {
+    const { data } = await sb.from("users").select("timezone, business_hours").eq("id", userId).maybeSingle();
+    return { timezone: data?.timezone || null, businessHours: data?.business_hours || null };
+  },
+  async setSettings(userId, { timezone, businessHours }) {
+    const patch = {};
+    if (timezone !== undefined) patch.timezone = timezone;
+    if (businessHours !== undefined) patch.business_hours = businessHours;
+    await sb.from("users").update(patch).eq("id", userId);
+    return true;
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -242,6 +269,10 @@ function mapSaved(r) {
 function mapBrain(r) {
   return { id: r.id, userId: r.user_id, kind: r.kind, label: r.label, content: r.content, when: r.created_at };
 }
+function mapBooking(r) {
+  return { id: r.id, userId: r.user_id, title: r.title, withWho: r.with_who,
+    startsAt: r.starts_at, endsAt: r.ends_at, notes: r.notes, meetLink: r.meet_link };
+}
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY FALLBACK (async wrappers so the interface matches)
@@ -255,6 +286,8 @@ const brainItems = [];
 const chatsByUserAgent = new Map(); // key: `${userId}:${agentId}` -> [messages]
 const teamInvites = []; // { id, orgId, email, status, createdAt }
 const featureRequests = []; // { id, userId, email, text, createdAt }
+const bookings = []; // { id, userId, title, withWho, startsAt, endsAt, notes, meetLink }
+const settingsByUser = new Map(); // userId -> { timezone, businessHours }
 let nextId = 1;
 
 const memoryDb = {
@@ -385,6 +418,24 @@ const memoryDb = {
   async addFeatureRequest(userId, email, text) {
     featureRequests.push({ id: nextId++, userId, email, text, createdAt: new Date().toISOString() });
     return true;
+  },
+  async listBookings(userId) {
+    return bookings.filter(b => b.userId === userId).sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt));
+  },
+  async addBooking(userId, b) {
+    const row = { id: nextId++, userId, title: b.title, withWho: b.withWho || null,
+      startsAt: b.startsAt, endsAt: b.endsAt || null, notes: b.notes || null, meetLink: b.meetLink || null };
+    bookings.push(row); return row;
+  },
+  async deleteBooking(userId, id) {
+    const i = bookings.findIndex(b => b.userId === userId && b.id === id);
+    if (i >= 0) bookings.splice(i, 1);
+    return true;
+  },
+  async getSettings(userId) { return settingsByUser.get(userId) || { timezone: null, businessHours: null }; },
+  async setSettings(userId, patch) {
+    const cur = settingsByUser.get(userId) || { timezone: null, businessHours: null };
+    settingsByUser.set(userId, { ...cur, ...patch }); return true;
   },
 };
 
