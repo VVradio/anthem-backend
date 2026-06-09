@@ -65,6 +65,11 @@ const supabaseDb = {
   async setPlan(userId, plan) {
     await sb.from("users").update({ plan }).eq("id", userId);
   },
+  async deleteUser(userId) {
+    // Child rows (fans, releases, bookings, etc.) cascade via FK on delete.
+    await sb.from("users").delete().eq("id", userId);
+    return true;
+  },
   async setPassword(userId, passwordHash) {
     await sb.from("users").update({ password_hash: passwordHash }).eq("id", userId);
   },
@@ -408,6 +413,15 @@ const memoryDb = {
   async findById(id) { return [...users.values()].find(u => u.id === id) || null; },
   async findByReferralCode(code) { return [...users.values()].find(u => u.referralCode === code) || null; },
   async setPlan(userId, plan) { const u = await this.findById(userId); if (u) u.plan = plan; },
+  async deleteUser(userId) {
+    const u = await this.findById(userId);
+    if (u) users.delete(u.email);
+    // clean child data
+    for (const arr of [fans, releases, syncTracks, bookings]) {
+      for (let i = arr.length - 1; i >= 0; i--) if (arr[i].userId === userId) arr.splice(i, 1);
+    }
+    return true;
+  },
   async setPassword(userId, passwordHash) { const u = await this.findById(userId); if (u) u.passwordHash = passwordHash; },
   async listAllUsers() {
     return [...users.values()].map(u => ({
