@@ -20,6 +20,7 @@ import featuresRouter from "./routes/features.js";
 import adminRouter from "./routes/admin.js";
 import bookingsRouter from "./routes/bookings.js";
 import settingsRouter from "./routes/settings.js";
+import epkRouter from "./routes/epk.js";
 
 dotenv.config();
 
@@ -51,6 +52,7 @@ app.use("/api/features", featuresRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/bookings", bookingsRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/epk", epkRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {

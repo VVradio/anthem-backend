@@ -195,6 +195,18 @@ const supabaseDb = {
     const { data } = await sb.from("users").select("id, email").neq("weekly_digest", false);
     return (data || []).map(u => ({ id: u.id, email: u.email }));
   },
+  async saveEpk(userId, shareCode, data) {
+    await sb.from("epks").upsert({ user_id: userId, share_code: shareCode, data, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    return { shareCode };
+  },
+  async getEpkByUser(userId) {
+    const { data } = await sb.from("epks").select("share_code, data").eq("user_id", userId).maybeSingle();
+    return data ? { shareCode: data.share_code, data: data.data } : null;
+  },
+  async getEpkByCode(code) {
+    const { data } = await sb.from("epks").select("data").eq("share_code", code).maybeSingle();
+    return data ? data.data : null;
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -294,6 +306,8 @@ const teamInvites = []; // { id, orgId, email, status, createdAt }
 const featureRequests = []; // { id, userId, email, text, createdAt }
 const bookings = []; // { id, userId, title, withWho, startsAt, endsAt, notes, meetLink }
 const settingsByUser = new Map(); // userId -> { timezone, businessHours }
+const epks = new Map(); // userId -> { shareCode, data }
+const epkByCode = new Map(); // shareCode -> userId
 let nextId = 1;
 
 const memoryDb = {
@@ -454,6 +468,11 @@ const memoryDb = {
       .filter(u => (settingsByUser.get(u.id)?.weeklyDigest !== false))
       .map(u => ({ id: u.id, email: u.email }));
   },
+  async saveEpk(userId, shareCode, data) {
+    epks.set(userId, { shareCode, data }); epkByCode.set(shareCode, userId); return { shareCode };
+  },
+  async getEpkByUser(userId) { return epks.get(userId) || null; },
+  async getEpkByCode(code) { const uid = epkByCode.get(code); return uid ? (epks.get(uid)?.data || null) : null; },
 };
 
 export const db = useSupabase ? supabaseDb : memoryDb;
