@@ -234,6 +234,33 @@ const supabaseDb = {
     const { data } = await sb.from("releases").select("*").eq("share_code", code).maybeSingle();
     return data ? mapRelease(data) : null;
   },
+  async listFans(userId) {
+    const { data } = await sb.from("fans").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    return (data || []).map(f => ({ id: f.id, name: f.name, email: f.email, source: f.source, when: f.created_at }));
+  },
+  async addFan(userId, { name, email, source }) {
+    // Avoid duplicate emails per artist.
+    const { data: existing } = await sb.from("fans").select("id").eq("user_id", userId).eq("email", email).maybeSingle();
+    if (existing) return { duplicate: true };
+    const { data } = await sb.from("fans").insert({ user_id: userId, name: name || null, email, source: source || "manual" }).select().single();
+    return { id: data.id, name: data.name, email: data.email };
+  },
+  async deleteFan(userId, id) {
+    await sb.from("fans").delete().eq("user_id", userId).eq("id", id);
+    return true;
+  },
+  async getFanCode(userId) {
+    const { data } = await sb.from("users").select("fan_code").eq("id", userId).maybeSingle();
+    return data?.fan_code || null;
+  },
+  async setFanCode(userId, code) {
+    await sb.from("users").update({ fan_code: code }).eq("id", userId);
+    return true;
+  },
+  async findUserByFanCode(code) {
+    const { data } = await sb.from("users").select("id, email").eq("fan_code", code).maybeSingle();
+    return data ? { id: data.id, email: data.email } : null;
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -340,6 +367,7 @@ const settingsByUser = new Map(); // userId -> { timezone, businessHours }
 const epks = new Map(); // userId -> { shareCode, data }
 const epkByCode = new Map(); // shareCode -> userId
 const releases = []; // { id, userId, title, splits, revenueCents, shareCode }
+const fans = []; // { id, userId, name, email, source, when }
 let nextId = 1;
 
 const memoryDb = {
@@ -527,6 +555,26 @@ const memoryDb = {
     return true;
   },
   async getReleaseByCode(code) { return releases.find(r => r.shareCode === code) || null; },
+  async listFans(userId) {
+    return fans.filter(f => f.userId === userId).sort((a, b) => b.id - a.id)
+      .map(f => ({ id: f.id, name: f.name, email: f.email, source: f.source, when: f.when }));
+  },
+  async addFan(userId, { name, email, source }) {
+    if (fans.find(f => f.userId === userId && f.email === email)) return { duplicate: true };
+    const row = { id: nextId++, userId, name: name || null, email, source: source || "manual", when: new Date().toISOString() };
+    fans.push(row); return { id: row.id, name: row.name, email: row.email };
+  },
+  async deleteFan(userId, id) {
+    const i = fans.findIndex(f => f.userId === userId && f.id === id);
+    if (i >= 0) fans.splice(i, 1);
+    return true;
+  },
+  async getFanCode(userId) { const u = await this.findById(userId); return u?.fanCode || null; },
+  async setFanCode(userId, code) { const u = await this.findById(userId); if (u) u.fanCode = code; return true; },
+  async findUserByFanCode(code) {
+    const u = [...users.values()].find(x => x.fanCode === code);
+    return u ? { id: u.id, email: u.email } : null;
+  },
 };
 
 export const db = useSupabase ? supabaseDb : memoryDb;
