@@ -5,7 +5,10 @@
 const FROM = process.env.FROM_EMAIL || "Anthem <onboarding@resend.dev>";
 
 export async function sendEmail(to, subject, html) {
-  if (!process.env.RESEND_API_KEY) return { skipped: true };
+  if (!process.env.RESEND_API_KEY) {
+    console.log("Email skipped — RESEND_API_KEY not detected by the server.");
+    return { skipped: true };
+  }
   try {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -20,6 +23,7 @@ export async function sendEmail(to, subject, html) {
       console.error("Email send failed:", t);
       return { ok: false };
     }
+    console.log("Email sent to", to);
     return { ok: true };
   } catch (e) {
     console.error("Email error:", e);
@@ -57,6 +61,61 @@ export function trialEndingEmail(email) {
         <p><a href="${SITE}" style="display:inline-block;background:#c2542d;color:#fff;
           text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600">Choose your plan</a></p>
         <p style="color:#6b6258;font-size:13px">— The Anthem team</p>
+      </div>`,
+  };
+}
+
+export function paymentEmail(email, planName, amountText) {
+  return {
+    subject: "Payment received — you're all set on Anthem ✅",
+    html: `
+      <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;color:#1f1a16">
+        <h2 style="color:#7b8b6f">Payment received — thank you!</h2>
+        <p>Your <b>${planName || "Anthem"}</b> plan is now active${amountText ? ` (${amountText})` : ""}.
+        Your AI music team is fully unlocked and ready to go.</p>
+        <p><a href="${SITE}" style="display:inline-block;background:#c2542d;color:#fff;
+          text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600">Open your studio</a></p>
+        <p style="color:#6b6258;font-size:13px">This email is your receipt. Questions? Just reply.<br>— The Anthem team</p>
+      </div>`,
+  };
+}
+
+export function resetPasswordEmail(email, resetUrl) {
+  return {
+    subject: "Reset your Anthem password",
+    html: `
+      <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;color:#1f1a16">
+        <h2 style="color:#c2542d">Reset your password</h2>
+        <p>We got a request to reset your Anthem password. Click below to choose a new one.
+        This link expires in 1 hour. If you didn't request this, you can ignore this email.</p>
+        <p><a href="${resetUrl}" style="display:inline-block;background:#c2542d;color:#fff;
+          text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600">Reset my password</a></p>
+        <p style="color:#6b6258;font-size:13px">Or paste this link: ${resetUrl}<br>— The Anthem team</p>
+      </div>`,
+  };
+}
+
+export function weeklyDigestEmail(email, data) {
+  const { bookings = [], tip = "" } = data || {};
+  const bookingHtml = bookings.length
+    ? `<ul style="padding-left:18px;margin:8px 0">${bookings.map(b => {
+        let when = b.startsAt;
+        try { when = new Date(b.startsAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); } catch {}
+        return `<li style="margin:4px 0"><b>${b.title || "Booking"}</b>${b.withWho ? " with " + b.withWho : ""} — ${when}</li>`;
+      }).join("")}</ul>`
+    : `<p style="color:#6b6258">No bookings on the calendar yet. Add your next gig or session in the Calendar tab.</p>`;
+  return {
+    subject: "Your week on Anthem 🎵",
+    html: `
+      <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1f1a16">
+        <h2 style="color:#c2542d">Your week ahead</h2>
+        <h3 style="margin-bottom:4px">📅 Upcoming bookings</h3>
+        ${bookingHtml}
+        <h3 style="margin-bottom:4px">💡 Tip of the week</h3>
+        <p style="color:#1f1a16;line-height:1.5">${tip}</p>
+        <p style="margin-top:18px"><a href="${SITE}" style="display:inline-block;background:#c2542d;color:#fff;
+          text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600">Open your studio</a></p>
+        <p style="color:#6b6258;font-size:12px;margin-top:20px">You're getting this weekly digest from Anthem. You can turn it off in Settings.</p>
       </div>`,
   };
 }
