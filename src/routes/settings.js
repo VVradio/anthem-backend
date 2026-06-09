@@ -10,10 +10,10 @@ router.get("/", requireAuth, async (req, res) => {
   res.json(s);
 });
 
-// POST /api/settings — update timezone and/or business hours.
+// POST /api/settings — update timezone, business hours, and/or weekly digest opt-in.
 router.post("/", requireAuth, async (req, res) => {
-  const { timezone, businessHours } = req.body || {};
-  await db.setSettings(req.user.id, { timezone, businessHours });
+  const { timezone, businessHours, weeklyDigest } = req.body || {};
+  await db.setSettings(req.user.id, { timezone, businessHours, weeklyDigest });
   res.json({ ok: true });
 });
 
