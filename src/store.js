@@ -305,6 +305,32 @@ const supabaseDb = {
       .in("status", ["pending", "done"]).order("created_at", { ascending: false }).limit(10);
     return (data || []).map(d => ({ id: d.id, agentId: d.agent_id, status: d.status, result: d.result, isSvg: d.is_svg, error: d.error }));
   },
+  async listThreads() {
+    const { data } = await sb.from("forum_threads").select("*").order("updated_at", { ascending: false }).limit(100);
+    return (data || []).map(mapThread);
+  },
+  async getThread(id) {
+    const { data } = await sb.from("forum_threads").select("*").eq("id", id).maybeSingle();
+    if (!data) return null;
+    const { data: replies } = await sb.from("forum_replies").select("*").eq("thread_id", id).order("created_at", { ascending: true });
+    return { ...mapThread(data), replies: (replies || []).map(mapReply) };
+  },
+  async addThread(userId, authorName, title, body) {
+    const { data } = await sb.from("forum_threads").insert({ user_id: userId, author_name: authorName, title, body }).select().single();
+    return mapThread(data);
+  },
+  async addReply(threadId, userId, authorName, body) {
+    const { data } = await sb.from("forum_replies").insert({ thread_id: threadId, user_id: userId, author_name: authorName, body }).select().single();
+    const { data: t } = await sb.from("forum_threads").select("reply_count").eq("id", threadId).maybeSingle();
+    await sb.from("forum_threads").update({ reply_count: (t?.reply_count || 0) + 1, updated_at: new Date().toISOString() }).eq("id", threadId);
+    return mapReply(data);
+  },
+  async deleteThread(userId, id, isOwner) {
+    const q = sb.from("forum_threads").delete().eq("id", id);
+    if (!isOwner) q.eq("user_id", userId);
+    await q;
+    return true;
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -393,6 +419,13 @@ function mapRelease(r) {
   return { id: r.id, userId: r.user_id, title: r.title, splits: r.splits || [],
     revenueCents: r.revenue_cents || 0, shareCode: r.share_code || null };
 }
+function mapThread(t) {
+  return { id: t.id, userId: t.user_id, author: t.author_name || "Artist", title: t.title,
+    body: t.body || "", replyCount: t.reply_count || 0, createdAt: t.created_at, updatedAt: t.updated_at };
+}
+function mapReply(r) {
+  return { id: r.id, userId: r.user_id, author: r.author_name || "Artist", body: r.body, createdAt: r.created_at };
+}
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY FALLBACK (async wrappers so the interface matches)
@@ -414,6 +447,8 @@ const releases = []; // { id, userId, title, splits, revenueCents, shareCode }
 const fans = []; // { id, userId, name, email, source, when }
 const syncTracks = []; // { id, userId, title, data }
 const chatJobs = new Map(); // id -> { id, userId, agentId, status, result, isSvg, error, createdAt }
+const threads = []; // { id, userId, author, title, body, replyCount, createdAt, updatedAt }
+const forumReplies = []; // { id, threadId, userId, author, body, createdAt }
 let nextId = 1;
 
 const memoryDb = {
@@ -667,6 +702,31 @@ const memoryDb = {
     return [...chatJobs.values()].filter(j => j.userId === userId && (j.status === "pending" || j.status === "done"))
       .sort((a, b) => b.createdAt - a.createdAt).slice(0, 10)
       .map(j => ({ id: j.id, agentId: j.agentId, status: j.status, result: j.result, isSvg: j.isSvg, error: j.error }));
+  },
+  async listThreads() {
+    return [...threads].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).slice(0, 100);
+  },
+  async getThread(id) {
+    const t = threads.find(x => x.id === id);
+    if (!t) return null;
+    return { ...t, replies: forumReplies.filter(r => r.threadId === id).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)) };
+  },
+  async addThread(userId, authorName, title, body) {
+    const t = { id: nextId++, userId, author: authorName || "Artist", title, body: body || "",
+      replyCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    threads.push(t); return t;
+  },
+  async addReply(threadId, userId, authorName, body) {
+    const r = { id: nextId++, threadId, userId, author: authorName || "Artist", body, createdAt: new Date().toISOString() };
+    forumReplies.push(r);
+    const t = threads.find(x => x.id === threadId);
+    if (t) { t.replyCount = (t.replyCount || 0) + 1; t.updatedAt = new Date().toISOString(); }
+    return r;
+  },
+  async deleteThread(userId, id, isOwner) {
+    const i = threads.findIndex(t => t.id === id && (isOwner || t.userId === userId));
+    if (i >= 0) { threads.splice(i, 1); for (let j = forumReplies.length - 1; j >= 0; j--) if (forumReplies[j].threadId === id) forumReplies.splice(j, 1); }
+    return true;
   },
 };
 

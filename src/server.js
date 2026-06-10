@@ -24,6 +24,7 @@ import epkRouter from "./routes/epk.js";
 import royaltiesRouter from "./routes/royalties.js";
 import fansRouter from "./routes/fans.js";
 import syncRouter from "./routes/sync.js";
+import forumRouter from "./routes/forum.js";
 
 dotenv.config();
 
@@ -59,6 +60,7 @@ app.use("/api/epk", epkRouter);
 app.use("/api/royalties", royaltiesRouter);
 app.use("/api/fans", fansRouter);
 app.use("/api/sync", syncRouter);
+app.use("/api/forum", forumRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
