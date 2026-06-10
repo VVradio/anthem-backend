@@ -33,6 +33,30 @@ export async function sendEmail(to, subject, html) {
 
 const SITE = process.env.CLIENT_ORIGIN || "https://www.varietyvibesradio.shop";
 
+// Address that receives owner alerts (new signups, upgrades). Override with OWNER_NOTIFY_EMAIL.
+const OWNER_NOTIFY = process.env.OWNER_NOTIFY_EMAIL || "gw@varietyvibesradio.com";
+
+// Send a heads-up to the owner. Fire-and-forget; never blocks the user flow.
+export function notifyOwner(kind, details = {}) {
+  let subject, lines;
+  if (kind === "signup") {
+    subject = "🎉 New Anthem signup";
+    lines = [`A new artist just signed up.`, `Email: ${details.email || "—"}`];
+  } else if (kind === "upgrade") {
+    subject = "💰 New Anthem upgrade";
+    lines = [`Someone upgraded their plan.`, `Email: ${details.email || "—"}`,
+      `Plan: ${details.plan || "—"}`, details.amount ? `Amount: ${details.amount}` : ""];
+  } else {
+    subject = "Anthem notification";
+    lines = [JSON.stringify(details)];
+  }
+  const html = `<div style="font-family:system-ui,sans-serif;color:#1f1a16;line-height:1.6">
+    ${lines.filter(Boolean).map(l => `<p style="margin:4px 0">${l}</p>`).join("")}
+    <p style="margin-top:14px"><a href="${SITE}">Open Anthem</a></p></div>`;
+  // Don't await — never let an owner alert slow down or break signup/checkout.
+  sendEmail(OWNER_NOTIFY, subject, html).catch(() => {});
+}
+
 export function welcomeEmail(email) {
   return {
     subject: "Welcome to Anthem — your AI music team is ready 🎶",
