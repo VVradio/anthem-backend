@@ -22,14 +22,22 @@ const SYSTEM_PROMPTS = {
 // The image agent returns SVG markup; everyone else returns text.
 const IMAGE_AGENT = "image";
 
-// POST /api/chat  { agentId, messages:[{role,content}] }
-router.post("/", requireAuth, async (req, res) => {
-  const { agentId, messages } = req.body || {};
-  const baseSystem = SYSTEM_PROMPTS[agentId];
-  if (!baseSystem) return res.status(400).json({ error: "Unknown agentId" });
-  if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
+// Shared: build the system prompt (persona + the artist's brain) for an agent.
+async function buildSystem(userId, agentId) {
+  let system = SYSTEM_PROMPTS[agentId];
+  try {
+    const brain = await db.listBrain(userId);
+    if (brain.length) {
+      const knowledge = brain.map(b => `• ${b.label || b.kind}: ${b.content}`).join("\n").slice(0, 8000);
+      system += `\n\nThe artist has shared the following about themselves — use it to personalize everything:\n${knowledge}`;
+    }
+  } catch { /* brain optional */ }
+  return system;
+}
 
-  // Enforce plan/trial access for this agent (server-side gate, org-aware).
+// Shared: run access + limit checks. Returns {ok} or {status, body}.
+async function checkAccess(req, agentId) {
+  if (!SYSTEM_PROMPTS[agentId]) return { status: 400, body: { error: "Unknown agentId" } };
   const freshUser = await db.findById(req.user.id);
   const ownerUser = (freshUser?.orgId && freshUser.orgId !== freshUser.id)
     ? await db.findById(freshUser.orgId) : freshUser;
@@ -37,46 +45,85 @@ router.post("/", requireAuth, async (req, res) => {
     const reason = (freshUser?.plan === "trial" && !inTrial(freshUser))
       ? "Your free trial has ended. Upgrade to keep using your agents."
       : "This agent isn't included in your plan. Upgrade to unlock it.";
-    return res.status(403).json({ error: reason, code: "plan_locked" });
+    return { status: 403, body: { error: reason, code: "plan_locked" } };
   }
-
-  // Enforce the monthly task limit for the user's plan.
   const used = await db.getUsage(req.user.id);
   const limit = PLAN_LIMITS[req.user.plan] ?? Object.values(PLAN_LIMITS)[0];
-  if (used >= limit) {
-    return res.status(402).json({ error: "Monthly task limit reached. Upgrade your plan." });
+  if (used >= limit) return { status: 402, body: { error: "Monthly task limit reached. Upgrade your plan." } };
+  return { ok: true, used, limit };
+}
+
+// Shared: actually call the model and return { text|svg }.
+async function generate(userId, agentId, messages) {
+  const system = await buildSystem(userId, agentId);
+  const result = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1500,
+    system,
+    messages: messages.map(m => ({ role: m.role, content: m.content })),
+  });
+  await db.incrementUsage(userId);
+  const raw = result.content.filter(b => b.type === "text").map(b => b.text).join("\n");
+  if (agentId === IMAGE_AGENT) {
+    const match = raw.match(/<svg[\s\S]*<\/svg>/i);
+    return { isSvg: true, value: match ? match[0] : null };
   }
+  return { isSvg: false, value: raw };
+}
 
-  // Pull the artist's "brain" (notes + site content) and add it to the persona,
-  // so every agent knows what the artist has taught Anthem about them.
-  let system = baseSystem;
+// POST /api/chat  { agentId, messages } — synchronous (kept for compatibility).
+router.post("/", requireAuth, async (req, res) => {
+  const { agentId, messages } = req.body || {};
+  if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
+  const access = await checkAccess(req, agentId);
+  if (!access.ok) return res.status(access.status).json(access.body);
   try {
-    const brain = await db.listBrain(req.user.id);
-    if (brain.length) {
-      const knowledge = brain.map(b => `• ${b.label || b.kind}: ${b.content}`).join("\n").slice(0, 8000);
-      system += `\n\nThe artist has shared the following about themselves — use it to personalize everything:\n${knowledge}`;
-    }
-  } catch { /* brain optional */ }
-
-  try {
-    const result = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
-      system,
-      messages: messages.map(m => ({ role: m.role, content: m.content })),
-    });
-    await db.incrementUsage(req.user.id);
-    const raw = result.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-
-    if (agentId === IMAGE_AGENT) {
-      const match = raw.match(/<svg[\s\S]*<\/svg>/i);
-      return res.json({ svg: match ? match[0] : null, usage: { used: used + 1, limit } });
-    }
-    res.json({ text: raw, usage: { used: used + 1, limit } });
+    const out = await generate(req.user.id, agentId, messages);
+    const usage = { used: access.used + 1, limit: access.limit };
+    if (out.isSvg) return res.json({ svg: out.value, usage });
+    res.json({ text: out.value, usage });
   } catch (e) {
     console.error(e);
     res.status(502).json({ error: "Upstream AI error" });
   }
+});
+
+// POST /api/chat/start { agentId, messages } — background mode.
+// Returns a jobId immediately; the server keeps generating even if the user leaves.
+router.post("/start", requireAuth, async (req, res) => {
+  const { agentId, messages } = req.body || {};
+  if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
+  const access = await checkAccess(req, agentId);
+  if (!access.ok) return res.status(access.status).json(access.body);
+
+  const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await db.createChatJob(jobId, req.user.id, agentId);
+  // Respond right away — the work continues in the background.
+  res.json({ jobId });
+
+  // Fire-and-forget: generate, then save the result to the job.
+  (async () => {
+    try {
+      const out = await generate(req.user.id, agentId, messages);
+      await db.finishChatJob(jobId, { result: out.value, isSvg: out.isSvg });
+    } catch (e) {
+      console.error("Background chat job failed:", e?.message || e);
+      await db.finishChatJob(jobId, { error: "Upstream AI error" });
+    }
+  })();
+});
+
+// GET /api/chat/job/:id — poll a background job's status/result.
+router.get("/job/:id", requireAuth, async (req, res) => {
+  const job = await db.getChatJob(req.user.id, req.params.id);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  res.json(job);
+});
+
+// GET /api/chat/jobs — list recent jobs (to recover answers after returning).
+router.get("/jobs/recent", requireAuth, async (req, res) => {
+  const jobs = await db.listPendingJobs(req.user.id);
+  res.json({ jobs });
 });
 
 export default router;
