@@ -33,7 +33,7 @@ const app = express();
 app.post("/api/billing/webhook", express.raw({ type: "application/json" }), stripeWebhook);
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || "*" }));
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "anthem-backend" }));
 
