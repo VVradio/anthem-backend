@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { db } from "../store.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isOwner } from "../access.js";
-import { sendEmail, welcomeEmail, resetPasswordEmail } from "../email.js";
+import { sendEmail, welcomeEmail, resetPasswordEmail, notifyOwner } from "../email.js";
 
 const router = Router();
 
@@ -29,6 +29,8 @@ router.post("/signup", async (req, res) => {
     // Welcome email (skips silently if email isn't configured).
     const w = welcomeEmail(email);
     sendEmail(email, w.subject, w.html).catch(() => {});
+    // Heads-up to the owner about the new signup.
+    notifyOwner("signup", { email });
     res.json({ token: signToken(user), user: publicUser(user) });
   } catch (e) {
     res.status(400).json({ error: e.message });
