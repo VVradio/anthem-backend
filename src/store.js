@@ -285,6 +285,26 @@ const supabaseDb = {
     await sb.from("sync_tracks").delete().eq("user_id", userId).eq("id", id);
     return true;
   },
+  async createChatJob(id, userId, agentId) {
+    await sb.from("chat_jobs").insert({ id, user_id: userId, agent_id: agentId, status: "pending" });
+    return { id, status: "pending" };
+  },
+  async finishChatJob(id, { result, isSvg, error }) {
+    await sb.from("chat_jobs").update({
+      status: error ? "error" : "done", result: result || null, is_svg: !!isSvg,
+      error: error || null, updated_at: new Date().toISOString(),
+    }).eq("id", id);
+    return true;
+  },
+  async getChatJob(userId, id) {
+    const { data } = await sb.from("chat_jobs").select("*").eq("id", id).eq("user_id", userId).maybeSingle();
+    return data ? { id: data.id, agentId: data.agent_id, status: data.status, result: data.result, isSvg: data.is_svg, error: data.error } : null;
+  },
+  async listPendingJobs(userId) {
+    const { data } = await sb.from("chat_jobs").select("*").eq("user_id", userId)
+      .in("status", ["pending", "done"]).order("created_at", { ascending: false }).limit(10);
+    return (data || []).map(d => ({ id: d.id, agentId: d.agent_id, status: d.status, result: d.result, isSvg: d.is_svg, error: d.error }));
+  },
   async getChat(userId, agentId) {
     const { data } = await sb.from("chats").select("messages")
       .eq("user_id", userId).eq("agent_id", agentId).maybeSingle();
@@ -393,6 +413,7 @@ const epkByCode = new Map(); // shareCode -> userId
 const releases = []; // { id, userId, title, splits, revenueCents, shareCode }
 const fans = []; // { id, userId, name, email, source, when }
 const syncTracks = []; // { id, userId, title, data }
+const chatJobs = new Map(); // id -> { id, userId, agentId, status, result, isSvg, error, createdAt }
 let nextId = 1;
 
 const memoryDb = {
@@ -628,6 +649,24 @@ const memoryDb = {
     const i = syncTracks.findIndex(t => t.userId === userId && t.id === id);
     if (i >= 0) syncTracks.splice(i, 1);
     return true;
+  },
+  async createChatJob(id, userId, agentId) {
+    chatJobs.set(id, { id, userId, agentId, status: "pending", result: null, isSvg: false, error: null, createdAt: Date.now() });
+    return { id, status: "pending" };
+  },
+  async finishChatJob(id, { result, isSvg, error }) {
+    const j = chatJobs.get(id);
+    if (j) { j.status = error ? "error" : "done"; j.result = result || null; j.isSvg = !!isSvg; j.error = error || null; }
+    return true;
+  },
+  async getChatJob(userId, id) {
+    const j = chatJobs.get(id);
+    return (j && j.userId === userId) ? { id: j.id, agentId: j.agentId, status: j.status, result: j.result, isSvg: j.isSvg, error: j.error } : null;
+  },
+  async listPendingJobs(userId) {
+    return [...chatJobs.values()].filter(j => j.userId === userId && (j.status === "pending" || j.status === "done"))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 10)
+      .map(j => ({ id: j.id, agentId: j.agentId, status: j.status, result: j.result, isSvg: j.isSvg, error: j.error }));
   },
 };
 
