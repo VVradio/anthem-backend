@@ -91,7 +91,7 @@ router.post("/", requireAuth, async (req, res) => {
 // POST /api/chat/start { agentId, messages } — background mode.
 // Returns a jobId immediately; the server keeps generating even if the user leaves.
 router.post("/start", requireAuth, async (req, res) => {
-  const { agentId, messages } = req.body || {};
+  const { agentId, messages, feed } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
   const access = await checkAccess(req, agentId);
   if (!access.ok) return res.status(access.status).json(access.body);
@@ -101,11 +101,20 @@ router.post("/start", requireAuth, async (req, res) => {
   // Respond right away — the work continues in the background.
   res.json({ jobId });
 
-  // Fire-and-forget: generate, then save the result to the job.
+  // Fire-and-forget: generate, save to the job, AND append to saved chat history
+  // so the answer survives even if the user has already left the chat.
   (async () => {
     try {
       const out = await generate(req.user.id, agentId, messages);
       await db.finishChatJob(jobId, { result: out.value, isSvg: out.isSvg });
+      // Persist into the conversation feed so it's there when they return.
+      try {
+        const baseFeed = Array.isArray(feed) ? feed : [];
+        const answerMsg = out.isSvg
+          ? { role: "assistant", text: "[generated image]" }
+          : { role: "assistant", text: out.value || "…" };
+        await db.saveChat(req.user.id, agentId, [...baseFeed, answerMsg]);
+      } catch (e) { console.error("Could not persist chat feed:", e?.message || e); }
     } catch (e) {
       console.error("Background chat job failed:", e?.message || e);
       await db.finishChatJob(jobId, { error: "Upstream AI error" });
