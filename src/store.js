@@ -266,6 +266,22 @@ const supabaseDb = {
     const { data } = await sb.from("users").select("id, email").eq("fan_code", code).maybeSingle();
     return data ? { id: data.id, email: data.email } : null;
   },
+  async getWidget(userId) {
+    const { data } = await sb.from("users").select("widget_code, widget_info").eq("id", userId).maybeSingle();
+    return { code: data?.widget_code || null, info: data?.widget_info || "" };
+  },
+  async setWidgetCode(userId, code) {
+    await sb.from("users").update({ widget_code: code }).eq("id", userId);
+    return true;
+  },
+  async setWidgetInfo(userId, info) {
+    await sb.from("users").update({ widget_info: info }).eq("id", userId);
+    return true;
+  },
+  async findUserByWidgetCode(code) {
+    const { data } = await sb.from("users").select("id, widget_info").eq("widget_code", code).maybeSingle();
+    return data ? { id: data.id, widgetInfo: data.widget_info || "" } : null;
+  },
   async listSyncTracks(userId) {
     const { data } = await sb.from("sync_tracks").select("*").eq("user_id", userId).order("created_at", { ascending: false });
     return (data || []).map(t => ({ id: t.id, title: t.title, data: t.data || {} }));
@@ -664,6 +680,16 @@ const memoryDb = {
   async findUserByFanCode(code) {
     const u = [...users.values()].find(x => x.fanCode === code);
     return u ? { id: u.id, email: u.email } : null;
+  },
+  async getWidget(userId) {
+    const u = await this.findById(userId);
+    return { code: u?.widgetCode || null, info: u?.widgetInfo || "" };
+  },
+  async setWidgetCode(userId, code) { const u = await this.findById(userId); if (u) u.widgetCode = code; return true; },
+  async setWidgetInfo(userId, info) { const u = await this.findById(userId); if (u) u.widgetInfo = info; return true; },
+  async findUserByWidgetCode(code) {
+    const u = [...users.values()].find(x => x.widgetCode === code);
+    return u ? { id: u.id, widgetInfo: u.widgetInfo || "" } : null;
   },
   async listSyncTracks(userId) {
     return syncTracks.filter(t => t.userId === userId).sort((a, b) => b.id - a.id)
