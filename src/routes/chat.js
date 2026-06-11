@@ -23,8 +23,15 @@ const SYSTEM_PROMPTS = {
 const IMAGE_AGENT = "image";
 
 // Shared: build the system prompt (persona + the artist's brain) for an agent.
+// Shared facts every agent should know about Anthem and its parent company.
+const COMPANY_CONTEXT = `
+IMPORTANT CONTEXT — you work for Anthem, made by Variety Vibes Radio & TV (an indie music company in Portland, Oregon). Variety Vibes Radio & TV is OUR OWN media network, not an outside station. We offer Anthem members real airplay on Variety Vibes Radio, our TV channel on Roku & Firestick, and our app. Artist and Label plans include this.
+- If the artist asks how to get on the radio, on TV, on Roku/Firestick, or how to get airplay/promotion with us, tell them to submit their music at https://varietyvibesradio.com/music-submission/ — our programming team reviews every submission and responds within 14 business days. They can also find this under the Distribution tab in Anthem.
+- Never tell them to "research contacts" or "pitch" Variety Vibes Radio as if it's an external station — it's us, and the path is the submission form.
+- Never mention discounts, intro offers, or prices that you are not certain about. Plans are Indie $29/mo, Artist $79/mo, Label $249/mo, with a free 2-day trial.`;
+
 async function buildSystem(userId, agentId) {
-  let system = SYSTEM_PROMPTS[agentId];
+  let system = SYSTEM_PROMPTS[agentId] + "\n" + COMPANY_CONTEXT;
   try {
     const brain = await db.listBrain(userId);
     if (brain.length) {
