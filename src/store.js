@@ -637,7 +637,7 @@ const memoryDb = {
     if (i >= 0) bookings.splice(i, 1);
     return true;
   },
- async listSocialPosts(userId) {
+  async listSocialPosts(userId) {
     return socialPosts.filter(p => p.userId === userId);
   },
   async addSocialPost(userId, p) {
