@@ -153,6 +153,21 @@ const supabaseDb = {
     const { error } = await sb.from("saved_items").delete().eq("user_id", userId).eq("id", id);
     return !error;
   },
+  async listSocialPosts(userId) {
+    const { data } = await sb.from("social_posts").select("*").eq("user_id", userId).order("created_at", { ascending: true });
+    return (data || []).map(mapSocialPost);
+  },
+  async addSocialPost(userId, p) {
+    const { data, error } = await sb.from("social_posts").insert({
+      user_id: userId, day: p.day, platform: p.platform, post_type: p.postType, note: p.note,
+    }).select().single();
+    if (error) throw new Error(error.message);
+    return mapSocialPost(data);
+  },
+  async deleteSocialPost(userId, id) {
+    const { error } = await sb.from("social_posts").delete().eq("user_id", userId).eq("id", id);
+    return !error;
+  },
   async listBrain(userId) {
     const { data } = await sb.from("brain_items").select("*").eq("user_id", userId).order("id", { ascending: false });
     return (data || []).map(mapBrain);
@@ -431,6 +446,9 @@ function mapBooking(r) {
   return { id: r.id, userId: r.user_id, title: r.title, withWho: r.with_who,
     startsAt: r.starts_at, endsAt: r.ends_at, notes: r.notes, meetLink: r.meet_link };
 }
+function mapSocialPost(r) {
+  return { id: r.id, userId: r.user_id, day: r.day, platform: r.platform, postType: r.post_type, note: r.note };
+}
 function mapRelease(r) {
   return { id: r.id, userId: r.user_id, title: r.title, splits: r.splits || [],
     revenueCents: r.revenue_cents || 0, shareCode: r.share_code || null };
@@ -456,6 +474,7 @@ const chatsByUserAgent = new Map(); // key: `${userId}:${agentId}` -> [messages]
 const teamInvites = []; // { id, orgId, email, status, createdAt }
 const featureRequests = []; // { id, userId, email, text, createdAt }
 const bookings = []; // { id, userId, title, withWho, startsAt, endsAt, notes, meetLink }
+const socialPosts = []; // { id, userId, day, platform, postType, note }
 const settingsByUser = new Map(); // userId -> { timezone, businessHours }
 const epks = new Map(); // userId -> { shareCode, data }
 const epkByCode = new Map(); // shareCode -> userId
@@ -616,6 +635,19 @@ const memoryDb = {
   async deleteBooking(userId, id) {
     const i = bookings.findIndex(b => b.userId === userId && b.id === id);
     if (i >= 0) bookings.splice(i, 1);
+    return true;
+  },
+  async listSocialPosts(userId) {
+    return socialPosts.filter(p => p.userId === userId);
+  },
+  async addSocialPost(userId, p) {
+    const row = { id: nextId++, userId, day: p.day, platform: p.platform, postType: p.postType, note: p.note };
+    socialPosts.push(row);
+    return row;
+  },
+  async deleteSocialPost(userId, id) {
+    const i = socialPosts.findIndex(p => p.userId === userId && p.id === id);
+    if (i >= 0) socialPosts.splice(i, 1);
     return true;
   },
   async getSettings(userId) {
