@@ -82,7 +82,7 @@ router.post("/chat/:code", async (req, res) => {
 
   try {
     const result = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 600,
       system,
       messages: messages.map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.text || "" })),
